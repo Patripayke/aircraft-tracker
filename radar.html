@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flight Radar Display</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #0a0a0a;
+            font-family: 'Courier New', monospace;
+            overflow: hidden;
+        }
+
+        #container {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        #header {
+            background: #1a1a1a;
+            color: #00ff00;
+            padding: 15px;
+            border-bottom: 2px solid #00ff00;
+        }
+
+        #header h1 {
+            margin: 0;
+            font-size: 24px;
+            text-align: center;
+        }
+
+        #stats {
+            display: flex;
+            justify-content: space-around;
+            margin-top: 10px;
+            font-size: 14px;
+        }
+
+        #radarContainer {
+            flex: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+        }
+
+        #radarCanvas {
+            border: 2px solid #00ff00;
+            background: #000;
+            box-shadow: 0 0 30px rgba(0, 255, 0, 0.3);
+        }
+
+        #info {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            border: 1px solid #00ff00;
+            padding: 15px;
+            color: #00ff00;
+            font-size: 12px;
+            max-width: 300px;
+            display: none;
+        }
+
+        .info-row {
+            margin: 5px 0;
+        }
+
+        .label {
+            color: #888;
+        }
+
+        #debug {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            border: 1px solid #ff0000;
+            padding: 10px;
+            color: #ff0000;
+            font-size: 11px;
+            max-width: 400px;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="header">
+            <h1>🛩️ REAL-TIME AIRSPACE RADAR</h1>
+            <div id="stats">
+                <div>Aircraft: <span id="aircraftCount">0</span></div>
+                <div>Range: <span id="rangeDisplay">30</span> mi</div>
+                <div>Update Rate: <span id="updateRate">0</span> Hz</div>
+            </div>
+        </div>
+        <div id="radarContainer">
+            <canvas id="radarCanvas"></canvas>
+            <div id="info"></div>
+            <div id="debug">Initializing...</div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('radarCanvas');
+        const ctx = canvas.getContext('2d');
+        const infoDiv = document.getElementById('info');
+        const debugDiv = document.getElementById('debug');
+
+        // Debug logging
+        function debug(msg) {
+            console.log(msg);
+            const time = new Date().toLocaleTimeString();
+            debugDiv.innerHTML = `[${time}] ${msg}<br>` + debugDiv.innerHTML;
+            // Keep only last 10 messages
+            const lines = debugDiv.innerHTML.split('<br>');
+            if (lines.length > 10) {
+                debugDiv.innerHTML = lines.slice(0, 10).join('<br>');
+            }
+        }
+
+        debug('Radar initialized');
+
+        // Configuration
+        const MY_LAT = 27.9;
+        const MY_LON = -82.3;
+        const MAX_RANGE = 30; // miles
+        let zoom = 1.0; // zoom level
+
+        // Set canvas size
+        const size = Math.min(window.innerWidth - 40, window.innerHeight - 150);
+        canvas.width = size;
+        canvas.height = size;
+
+        const centerX = canvas.width / 2;
+        const centerY = canvas.height / 2;
+        const maxRadius = (canvas.width / 2) - 40;
+
+        let aircraft = [];
+        let selectedAircraft = null;
+        let updateCount = 0;
+        let lastUpdate = Date.now();
+
+        // Convert lat/lon to radar coordinates
+        function latLonToRadar(lat, lon) {
+            const latDiff = lat - MY_LAT;
+            const lonDiff = lon - MY_LON;
+
+            // Approximate distance in miles (rough conversion)
+            const milesPerDegreeLat = 69;
+            const milesPerDegreeLon = milesPerDegreeLat * Math.cos(MY_LAT * Math.PI / 180);
+
+            const northMiles = latDiff * milesPerDegreeLat;
+            const eastMiles = lonDiff * milesPerDegreeLon;
+
+            const distance = Math.sqrt(northMiles * northMiles + eastMiles * eastMiles);
+            const angle = Math.atan2(eastMiles, northMiles);
+
+            // Scale to radar
+            const scale = (maxRadius / MAX_RANGE) * zoom;
+            const x = centerX + (eastMiles * scale);
+            const y = centerY - (northMiles * scale); // Invert Y for screen coords
+
+            return { x, y, distance, angle };
+        }
+
+        // Draw radar background
+        function drawRadar() {
+            // Clear
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Range rings
+            const rings = 4;
+            for (let i = 1; i <= rings; i++) {
+                const radius = (maxRadius / rings) * i;
+                
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+                ctx.strokeStyle = i === rings ? '#00ff00' : '#003300';
+                ctx.lineWidth = i === rings ? 2 : 1;
+                ctx.stroke();
+
+                // Distance label
+                const dist = (MAX_RANGE / rings) * i / zoom;
+                ctx.fillStyle = '#00ff00';
+                ctx.font = '12px Courier New';
+                ctx.fillText(`${dist.toFixed(0)}mi`, centerX + 5, centerY - radius + 5);
+            }
+
+            // Cardinal directions
+            ctx.fillStyle = '#00ff00';
+            ctx.font = 'bold 16px Courier New';
+            ctx.fillText('N', centerX - 8, centerY - maxRadius - 10);
+            ctx.fillText('S', centerX - 8, centerY + maxRadius + 20);
+            ctx.fillText('E', centerX + maxRadius + 10, centerY + 5);
+            ctx.fillText('W', centerX - maxRadius - 20, centerY + 5);
+
+            // Center point (your location)
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, 5, 0, Math.PI * 2);
+            ctx.fillStyle = '#ff0000';
+            ctx.fill();
+            ctx.strokeStyle = '#ff0000';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+
+        // Draw aircraft
+        function drawAircraft() {
+            aircraft.forEach(ac => {
+                const pos = latLonToRadar(ac.lat, ac.lon);
+
+                // Skip if out of range
+                if (Math.abs(pos.x - centerX) > maxRadius || 
+                    Math.abs(pos.y - centerY) > maxRadius) {
+                    return;
+                }
+
+                const isSelected = selectedAircraft === ac.hex;
+
+                // Draw historical trail (blue)
+                if (ac.trail && ac.trail.length > 1) {
+                    ctx.strokeStyle = isSelected ? 'rgba(0, 200, 255, 0.6)' : 'rgba(0, 150, 255, 0.3)';
+                    ctx.lineWidth = isSelected ? 2 : 1;
+                    ctx.beginPath();
+                    
+                    // Draw line through all trail points
+                    for (let i = 0; i < ac.trail.length; i++) {
+                        const trailPos = latLonToRadar(ac.trail[i][0], ac.trail[i][1]);
+                        if (i === 0) {
+                            ctx.moveTo(trailPos.x, trailPos.y);
+                        } else {
+                            ctx.lineTo(trailPos.x, trailPos.y);
+                        }
+                    }
+                    ctx.stroke();
+                }
+                
+                // Aircraft as a simple dot
+                ctx.beginPath();
+                ctx.arc(pos.x, pos.y, isSelected ? 6 : 4, 0, Math.PI * 2);
+                ctx.fillStyle = isSelected ? '#ffff00' : '#00ff00';
+                ctx.fill();
+                ctx.strokeStyle = isSelected ? '#ffff00' : '#00ff00';
+                ctx.lineWidth = isSelected ? 2 : 1;
+                ctx.stroke();
+
+                // Callsign label
+                ctx.fillStyle = isSelected ? '#ffff00' : '#00ff00';
+                ctx.font = '11px Courier New';
+                const label = ac.callsign !== 'UNKNOWN' ? ac.callsign : ac.hex.substr(0, 6);
+                ctx.fillText(label, pos.x + 10, pos.y - 10);
+
+                // Altitude
+                if (ac.alt) {
+                    ctx.font = '9px Courier New';
+                    ctx.fillText(`${Math.round(ac.alt/100)}`, pos.x + 10, pos.y + 2);
+                }
+
+                // Predicted position (yellow/orange)
+                if (ac.pred_lat && ac.pred_lon) {
+                    const predPos = latLonToRadar(ac.pred_lat, ac.pred_lon);
+                    
+                    // Draw prediction line
+                    ctx.beginPath();
+                    ctx.moveTo(pos.x, pos.y);
+                    ctx.lineTo(predPos.x, predPos.y);
+                    ctx.strokeStyle = isSelected ? 'rgba(255, 200, 0, 0.8)' : 'rgba(255, 165, 0, 0.5)';
+                    ctx.lineWidth = isSelected ? 2 : 1;
+                    ctx.setLineDash([5, 5]);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+
+                    // Prediction marker
+                    ctx.beginPath();
+                    ctx.arc(predPos.x, predPos.y, 3, 0, Math.PI * 2);
+                    ctx.fillStyle = isSelected ? 'rgba(255, 200, 0, 0.8)' : 'rgba(255, 165, 0, 0.5)';
+                    ctx.fill();
+                }
+            });
+        }
+
+        // Fetch aircraft data
+        async function fetchAircraft() {
+            try {
+                debug('Fetching aircraft data...');
+                const response = await fetch('http://127.0.0.1:5000/aircraft');
+                
+                if (!response.ok) {
+                    debug(`HTTP Error: ${response.status} ${response.statusText}`);
+                    return;
+                }
+                
+                const data = await response.json();
+                aircraft = data;
+                
+                debug(`Received ${aircraft.length} aircraft`);
+                
+                // Log first aircraft for debugging
+                if (aircraft.length > 0) {
+                    const first = aircraft[0];
+                    debug(`Sample: ${first.callsign} at ${first.lat.toFixed(3)}, ${first.lon.toFixed(3)}`);
+                }
+                
+                updateCount++;
+                const now = Date.now();
+                if (now - lastUpdate >= 1000) {
+                    document.getElementById('updateRate').textContent = updateCount;
+                    updateCount = 0;
+                    lastUpdate = now;
+                }
+                
+                document.getElementById('aircraftCount').textContent = aircraft.length;
+            } catch (err) {
+                debug(`Fetch error: ${err.message}`);
+                console.error('Failed to fetch aircraft:', err);
+            }
+        }
+
+        // Show aircraft info
+        function showInfo(ac) {
+            if (!ac) {
+                infoDiv.style.display = 'none';
+                return;
+            }
+
+            const pos = latLonToRadar(ac.lat, ac.lon);
+            
+            infoDiv.innerHTML = `
+                <div class="info-row"><strong>${ac.callsign}</strong></div>
+                <div class="info-row"><span class="label">ICAO:</span> ${ac.hex}</div>
+                <div class="info-row"><span class="label">Altitude:</span> ${ac.alt ? ac.alt + ' ft' : 'N/A'}</div>
+                <div class="info-row"><span class="label">Speed:</span> ${ac.speed ? Math.round(ac.speed) + ' kts' : 'N/A'}</div>
+                <div class="info-row"><span class="label">Heading:</span> ${ac.heading ? Math.round(ac.heading) + '°' : 'N/A'}</div>
+                <div class="info-row"><span class="label">Distance:</span> ${pos.distance.toFixed(1)} mi</div>
+                <div class="info-row"><span class="label">Position:</span> ${ac.lat.toFixed(4)}, ${ac.lon.toFixed(4)}</div>
+            `;
+            infoDiv.style.display = 'block';
+        }
+
+        // Handle clicks
+        canvas.addEventListener('click', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const clickX = e.clientX - rect.left;
+            const clickY = e.clientY - rect.top;
+
+            // Find clicked aircraft
+            let closest = null;
+            let closestDist = 20; // pixels
+
+            aircraft.forEach(ac => {
+                const pos = latLonToRadar(ac.lat, ac.lon);
+                const dist = Math.sqrt(
+                    Math.pow(pos.x - clickX, 2) + 
+                    Math.pow(pos.y - clickY, 2)
+                );
+
+                if (dist < closestDist) {
+                    closest = ac;
+                    closestDist = dist;
+                }
+            });
+
+            selectedAircraft = closest ? closest.hex : null;
+            showInfo(closest);
+        });
+
+        // Handle zoom with mouse wheel - DISABLED
+        /*
+        canvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            zoom *= e.deltaY > 0 ? 0.9 : 1.1;
+            zoom = Math.max(0.5, Math.min(5, zoom));
+            document.getElementById('rangeDisplay').textContent = (MAX_RANGE / zoom).toFixed(0);
+        });
+        */
+
+        // Animation loop
+        function animate() {
+            drawRadar();
+            drawAircraft();
+            requestAnimationFrame(animate);
+        }
+
+        // Start
+        debug('Starting radar system...');
+        
+        // Test API connection immediately
+        fetch('http://127.0.0.1:5000/status')
+            .then(r => r.json())
+            .then(data => {
+                debug(`API Status: ${data.status}, Tracked: ${data.tracked_aircraft}`);
+            })
+            .catch(err => {
+                debug(`API connection failed: ${err.message}`);
+                debug('Make sure Python script is running!');
+            });
+        
+        fetchAircraft();
+        setInterval(fetchAircraft, 1000); // Update every second
+        animate();
+    </script>
+</body>
+</html>
